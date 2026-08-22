@@ -1,0 +1,4 @@
+# Sub-screen mascot: host serves /buddy, client listens for navigate-to-session.
+- insert:
+    - id: buddy
+      name: 'dsh-buddy'

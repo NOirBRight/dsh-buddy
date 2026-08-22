@@ -1,0 +1,536 @@
+/* PROTOTYPE — 共享基座 + A/B/C 三个变体的独立样式段 + 悬浮切换条 */
+
+:root {
+  --bg: #060a13;
+  --panel: #0d1522;
+  --panel-2: #111c2c;
+  --ink: #e6fbf5;
+  --dim: #7fa8a2;
+  --line: #1c2f3f;
+  --need: #ffb703;
+  --error: #ff6b6b;
+  --run: #4ecdc4;
+  --done: #95e1a3;
+  --idle: #5d7d86;
+}
+
+html, body {
+  margin: 0;
+  width: 960px;
+  height: 400px;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Sarasa Mono SC", "Noto Sans CJK SC", "JetBrains Mono", ui-monospace, monospace;
+  user-select: none;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+}
+
+#root { width: 960px; height: 400px; }
+
+.sprite {
+  background-image: url("/buddy/assets/buddy-sprites.png?v=2");
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  flex: none;
+}
+
+button { font: inherit; cursor: pointer; }
+
+.heart-pop {
+  position: fixed;
+  z-index: 50;
+  color: #ff8fab;
+  font-size: 26px;
+  pointer-events: none;
+  animation: heart-float 0.9s ease-out forwards;
+}
+
+@keyframes heart-float {
+  from { transform: translateY(6px) scale(0.7); opacity: 0; }
+  30% { opacity: 1; }
+  to { transform: translateY(-34px) scale(1.25); opacity: 0; }
+}
+
+#offline {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  background: #3b0d0d;
+  color: var(--error);
+  border: 1px solid var(--error);
+  padding: 4px 14px;
+  font-size: 13px;
+  border-radius: 999px;
+}
+
+#offline[hidden] { display: none; }
+
+/* ---------- switcher（评估用，不属于设计本身）---------- */
+
+#proto-switcher {
+  position: fixed;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #f5f5f0;
+  color: #16181d;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+  opacity: 0.92;
+}
+
+#proto-switcher button {
+  border: none;
+  background: none;
+  color: #16181d;
+  font-size: 18px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+}
+
+#proto-switcher button:active { background: #ddd; }
+
+#proto-switcher span { min-width: 96px; text-align: center; font-weight: 700; }
+
+/* ==================================================================
+   Variant A — 驾驶舱：左舞台 + 右大字列表，待办卡片顶在列表上方
+   ================================================================== */
+
+.va {
+  width: 960px;
+  height: 400px;
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  box-sizing: border-box;
+  background:
+    radial-gradient(700px 400px at 150px 260px, rgba(78, 205, 196, 0.10), transparent 65%),
+    var(--bg);
+}
+
+.va.mood-needs-you { animation: va-pulse 1.4s ease-in-out infinite; }
+
+@keyframes va-pulse {
+  0%, 100% { box-shadow: inset 0 0 0 0 rgba(255, 183, 3, 0); }
+  50% { box-shadow: inset 0 0 0 4px rgba(255, 183, 3, 0.55); }
+}
+
+.va-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-right: 2px solid var(--line);
+  cursor: pointer;
+}
+
+.va-mood { font-size: 20px; font-weight: 700; letter-spacing: 0.12em; }
+
+.va-clock {
+  position: absolute;
+  bottom: 10px;
+  font-size: 15px;
+  color: var(--dim);
+  letter-spacing: 0.2em;
+}
+
+.va-main { display: flex; flex-direction: column; min-width: 0; background: var(--panel); }
+
+.va-head {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 16px;
+  border-bottom: 2px solid var(--line);
+}
+
+.va-brand { color: var(--run); font-weight: 700; letter-spacing: 0.14em; font-size: 15px; }
+
+.va-chips { display: flex; gap: 8px; margin-left: auto; }
+
+.va-chip {
+  font-size: 14px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+
+.va-chip.attention { color: #111; background: var(--need); border-color: var(--need); }
+.va-chip.error { color: var(--error); border-color: var(--error); }
+.va-chip.running { color: var(--run); border-color: var(--run); }
+.va-chip.done { color: var(--done); }
+.va-chip.idle { color: var(--idle); }
+
+.va-card {
+  margin: 10px 12px 0;
+  padding: 12px 14px;
+  border: 2px solid var(--need);
+  border-radius: 6px;
+  background: linear-gradient(180deg, #221a06, #171203);
+}
+
+.va-card-head { font-size: 18px; font-weight: 700; color: var(--need); margin-bottom: 4px; }
+
+.va-card-detail { font-size: 14px; color: var(--dim); line-height: 1.4; margin-bottom: 10px; }
+
+.va-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.va-btn {
+  min-height: 52px;
+  min-width: 130px;
+  padding: 6px 18px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+  background: #0a2c26;
+  border: 2px solid var(--run);
+  border-radius: 6px;
+  text-align: left;
+}
+
+.va-btn small { display: block; font-size: 12px; font-weight: 400; color: var(--dim); }
+
+.va-btn.danger { border-color: var(--error); background: #2a1010; }
+.va-btn.pick.on { border-color: var(--need); color: var(--need); }
+.va-btn:active { transform: translateY(1px); filter: brightness(1.3); }
+
+.va-list { flex: 1; overflow: hidden; padding: 6px 0; }
+
+.va-row {
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  gap: 14px;
+  align-items: center;
+  height: 60px;
+  padding: 0 16px 0 0;
+  border-bottom: 1px solid #142131;
+}
+
+.va-row:active { background: #1b2a38; }
+.va-row.attention { background: rgba(255, 183, 3, 0.10); }
+
+.va-bar-mark { width: 8px; height: 100%; }
+.va-bar-mark.attention { background: var(--need); box-shadow: 2px 0 10px rgba(255, 183, 3, 0.5); }
+.va-bar-mark.error { background: var(--error); }
+.va-bar-mark.running { background: var(--run); }
+.va-bar-mark.done { background: var(--done); }
+.va-bar-mark.idle { background: #24404b; }
+
+.va-title { font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.va-reason { font-size: 13px; color: var(--dim); white-space: nowrap; }
+
+.va-empty { color: var(--dim); font-size: 16px; padding: 30px 20px; }
+
+/* ==================================================================
+   Variant B — 剧场：角色巨大居中，会话是底部走马灯，答题全屏弹层
+   ================================================================== */
+
+.vb {
+  position: relative;
+  width: 960px;
+  height: 400px;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(900px 500px at 480px 190px, rgba(78, 205, 196, 0.12), transparent 60%),
+    linear-gradient(180deg, #081020, var(--bg));
+  overflow: hidden;
+}
+
+.vb-top {
+  display: flex;
+  justify-content: space-between;
+  padding: 12px 20px 0;
+  font-size: 14px;
+  letter-spacing: 0.16em;
+  color: var(--dim);
+}
+
+.vb-brand { color: var(--run); font-weight: 700; }
+
+.vb-center {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 36px;
+  min-height: 0;
+  padding: 0 28px;
+  box-sizing: border-box;
+}
+
+.vb-center.open { justify-content: flex-start; gap: 26px; }
+
+.vb-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  flex: none;
+}
+
+.vb-center.open .vb-stage { animation: vb-slide-left 0.4s ease-out both; }
+.vb-center.open.settled .vb-stage { animation: none; }
+
+@keyframes vb-slide-left {
+  from { transform: translateX(220px); }
+  to { transform: none; }
+}
+
+.vb-mood-mini { font-size: 14px; color: var(--dim); letter-spacing: 0.1em; }
+
+.vb-word { font-size: 44px; font-weight: 900; letter-spacing: 0.08em; line-height: 1.15; }
+
+.vb-word.needs-you { color: var(--need); text-shadow: 0 0 24px rgba(255, 183, 3, 0.45); }
+.vb-word.error { color: var(--error); }
+.vb-word.working { color: var(--run); }
+.vb-word.done-unseen { color: var(--done); }
+.vb-word.idle { color: var(--idle); }
+
+.vb-sub { margin-top: 8px; font-size: 17px; color: var(--dim); }
+
+.vb-ticker {
+  display: flex;
+  gap: 10px;
+  padding: 0 16px 14px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.vb-chip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 300px;
+  height: 46px;
+  padding: 0 16px;
+  font-size: 15px;
+  color: var(--ink);
+  background: rgba(17, 28, 44, 0.85);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.vb-chip.attention { border-color: var(--need); box-shadow: 0 0 12px rgba(255, 183, 3, 0.35); }
+.vb-chip.error { border-color: var(--error); }
+.vb-chip:active { background: #1b2a38; }
+.vb-chip.active { background: #1d3040; border-color: var(--run); }
+
+.vb-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.vb-dot.attention { background: var(--need); }
+.vb-dot.error { background: var(--error); }
+.vb-dot.running { background: var(--run); animation: vb-blink 1s ease-in-out infinite; }
+.vb-dot.done { background: var(--done); }
+.vb-dot.idle { background: var(--idle); }
+
+@keyframes vb-blink { 50% { opacity: 0.25; } }
+
+.vb-none { color: var(--dim); font-size: 14px; padding: 12px; }
+
+.vb-bubble {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  max-width: 640px;
+  padding: 16px 22px;
+  background: #0e1826;
+  border: 2px solid var(--line);
+  border-radius: 14px;
+  transform-origin: left center;
+  animation: vb-pop 0.32s 0.08s ease-out both;
+}
+
+.vb-center.settled .vb-bubble { animation: none; }
+
+@keyframes vb-pop {
+  from { transform: scale(0.75); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.vb-bubble::before {
+  content: "";
+  position: absolute;
+  left: -11px;
+  top: calc(50% - 9px);
+  width: 18px;
+  height: 18px;
+  background: #0e1826;
+  border-left: 2px solid var(--line);
+  border-bottom: 2px solid var(--line);
+  transform: rotate(45deg);
+}
+
+.vb-bubble.need { border-color: var(--need); box-shadow: 0 0 32px rgba(255, 183, 3, 0.18); }
+.vb-bubble.need::before { border-color: var(--need); }
+.vb-bubble.error { border-color: var(--error); }
+.vb-bubble.error::before { border-color: var(--error); }
+
+.vb-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 40px;
+  height: 40px;
+  font-size: 20px;
+  color: var(--dim);
+  background: none;
+  border: none;
+  border-radius: 50%;
+}
+
+.vb-close:active { background: #1b2a38; }
+
+.vb-bubble-head { font-size: 15px; font-weight: 700; color: var(--dim); margin-bottom: 4px; }
+.vb-bubble-head.need { font-size: 22px; color: var(--need); }
+.vb-bubble-head.attention { color: var(--need); }
+.vb-bubble-head.error { color: var(--error); }
+.vb-bubble-head.running { color: var(--run); }
+.vb-bubble-head.done { color: var(--done); }
+
+.vb-bubble-title {
+  font-size: 19px;
+  font-weight: 700;
+  margin-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vb-bubble-detail { font-size: 15px; color: var(--dim); line-height: 1.5; margin-bottom: 14px; }
+
+.vb-bubble-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+
+.vb-btn {
+  min-height: 62px;
+  min-width: 170px;
+  padding: 8px 20px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+  background: #0a2c26;
+  border: 2px solid var(--run);
+  border-radius: 8px;
+  text-align: left;
+}
+
+.vb-btn small { display: block; font-size: 13px; font-weight: 400; color: var(--dim); }
+
+.vb-btn.danger { border-color: var(--error); background: #2a1010; }
+.vb-btn.pick.on { border-color: var(--need); color: var(--need); }
+.vb-btn:active { transform: translateY(1px); filter: brightness(1.3); }
+
+/* ==================================================================
+   Variant C — 指挥板：全宽班次表，大字大行，鲸鱼缩成头部吉祥物
+   ================================================================== */
+
+.vc {
+  width: 960px;
+  height: 400px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.vc-head {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 96px;
+  padding: 0 20px;
+  border-bottom: 3px solid var(--line);
+  background: linear-gradient(180deg, #0b1424, #081020);
+}
+
+.vc-mascot { cursor: pointer; display: flex; align-items: center; }
+
+.vc-counts { display: flex; gap: 26px; margin-left: 6px; }
+
+.vc-count { display: flex; align-items: baseline; gap: 7px; font-size: 15px; color: var(--dim); }
+
+.vc-count b { font-size: 38px; font-weight: 800; line-height: 1; }
+
+.vc-count.attention b { color: var(--need); }
+.vc-count.error b { color: var(--error); }
+.vc-count.running b { color: var(--run); }
+.vc-count.done b { color: var(--done); }
+.vc-count.zero b { color: #29414e; }
+.vc-count.zero { color: #29414e; }
+
+.vc-clock { margin-left: auto; font-size: 30px; font-weight: 700; letter-spacing: 0.1em; color: var(--ink); }
+
+.vc-rows { flex: 1; overflow: hidden; }
+
+.vc-row { border-bottom: 1px solid #12202e; }
+
+.vc-row.attention { background: rgba(255, 183, 3, 0.08); }
+.vc-row.open { background: rgba(255, 183, 3, 0.10); }
+
+.vc-row-main {
+  display: grid;
+  grid-template-columns: 46px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  height: 68px;
+  padding-right: 20px;
+}
+
+.vc-row-main:active { background: #1b2a38; }
+
+.vc-glyph { justify-self: center; width: 14px; height: 14px; border-radius: 3px; }
+.vc-glyph.attention { background: var(--need); box-shadow: 0 0 12px var(--need); animation: vb-blink 1.1s ease-in-out infinite; }
+.vc-glyph.error { background: var(--error); }
+.vc-glyph.running { background: var(--run); }
+.vc-glyph.done { background: var(--done); }
+.vc-glyph.idle { background: #24404b; }
+
+.vc-title { font-size: 21px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.vc-reason { font-size: 14px; color: var(--dim); white-space: nowrap; }
+
+.vc-expand { padding: 2px 20px 14px 46px; }
+
+.vc-expand-detail { font-size: 15px; color: var(--dim); margin-bottom: 10px; }
+
+.vc-expand-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.vc-btn {
+  min-height: 54px;
+  min-width: 150px;
+  padding: 6px 18px;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--ink);
+  background: #0a2c26;
+  border: 2px solid var(--run);
+  border-radius: 6px;
+  text-align: left;
+}
+
+.vc-btn small { display: block; font-size: 12px; font-weight: 400; color: var(--dim); }
+
+.vc-btn.danger { border-color: var(--error); background: #2a1010; }
+.vc-btn.pick.on { border-color: var(--need); color: var(--need); }
+.vc-btn:active { transform: translateY(1px); filter: brightness(1.3); }
+
+.vc-empty { color: var(--dim); font-size: 17px; padding: 34px 24px; }
