@@ -1,5 +1,6 @@
-// PROTOTYPE — /buddy 上的三个 UI 变体，?variant=A|B|C 切换（底部悬浮条 / ←→ 键）。
-// ?mock=1 注入假会话方便看满状态。数据层共享，渲染层每个变体独立重写。
+// Theater layout: whale centered, sessions as a ticker. Tap a chip or a
+// pending confirmation slides the whale left and opens a speech bubble.
+// Debug: ?mock=1 injects fake sessions; ?open=<id> pre-opens a bubble.
 (() => {
   const MOOD_LABEL = {
     'needs-you': '等你点一下',
@@ -21,8 +22,6 @@
 
   const params = new URLSearchParams(location.search)
   const MOCK = params.get('mock') === '1'
-  const VARIANTS = ['A', 'B', 'C']
-  let variant = VARIANTS.includes(params.get('variant')) ? params.get('variant') : 'B'
 
   const state = {
     snapshot: { mood: 'idle', counts: { attention: 0, error: 0, running: 0, done: 0, idle: 0 }, sessions: [], revision: 0 },
@@ -68,8 +67,6 @@
 
   const root = document.getElementById('root')
   const offlineEl = document.getElementById('offline')
-
-  // ---------- shared data layer ----------
 
   function mergeSnapshot() {
     const host = state.snapshot
@@ -131,8 +128,6 @@
     return bits.length ? bits.join(' · ') : '全部空闲'
   }
 
-  // ---------- actions ----------
-
   async function navigate(sessionId) {
     if (sessionId.startsWith('mock-')) return
     try {
@@ -179,8 +174,6 @@
     }
   }
 
-  // ---------- sprite ----------
-
   function moodNow() {
     if (Date.now() < state.petUntil) return 'pet'
     return mergeSnapshot().mood
@@ -210,27 +203,25 @@
     render()
   }
 
-  // ---------- pending card fragments (each variant styles its own) ----------
-
-  function pendingActionsHtml(pending, cls) {
+  function pendingActionsHtml(pending) {
     if (pending.hostOnly) {
-      return `<button class="${cls}" data-nav="${esc(pending.sessionId)}">去主屏看</button>`
+      return `<button class="btn" data-nav="${esc(pending.sessionId)}">去主屏看</button>`
     }
     if (pending.kind === 'approval') {
       return `
-        <button class="${cls}" data-approve="allowed-once">批准</button>
-        <button class="${cls} danger" data-approve="rejected">拒绝</button>`
+        <button class="btn" data-approve="allowed-once">批准</button>
+        <button class="btn danger" data-approve="rejected">拒绝</button>`
     }
     const question = pending.questions[0]
     const options = question.options ?? []
     if (options.length === 0) {
-      return `<button class="${cls}" data-nav="${esc(pending.sessionId)}">去主屏回答</button>`
+      return `<button class="btn" data-nav="${esc(pending.sessionId)}">去主屏回答</button>`
     }
     const picks = options.map((option, index) => `
-      <button class="${cls} pick${state.selected.has(option.label) ? ' on' : ''}" data-opt="${index}">
+      <button class="btn pick${state.selected.has(option.label) ? ' on' : ''}" data-opt="${index}">
         ${esc(option.label)}${option.description ? `<small>${esc(option.description)}</small>` : ''}
       </button>`).join('')
-    const confirm = question.multiSelect ? `<button class="${cls}" data-confirm="1">确认</button>` : ''
+    const confirm = question.multiSelect ? '<button class="btn" data-confirm="1">确认</button>' : ''
     return picks + confirm
   }
 
@@ -248,200 +239,81 @@
     return question.question + (question.detail ? ` · ${String(question.detail).slice(0, 80)}` : '')
   }
 
-  // ---------- variant A 驾驶舱 ----------
-
-  const VariantA = {
-    key: 'A',
-    name: '驾驶舱',
-    render(snap, pending) {
-      const chips = ['attention', 'error', 'running', 'done'].filter((k) => snap.counts[k])
-        .map((k) => `<span class="va-chip ${k}">${snap.counts[k]} ${STATUS_LABEL[k]}</span>`).join('')
-      const rows = snap.sessions.slice(0, pending ? 3 : 5).map((row) => `
-        <div class="va-row ${row.status}" data-nav="${esc(row.id)}">
-          <span class="va-bar-mark ${row.status}"></span>
-          <span class="va-title">${esc(row.title)}</span>
-          <span class="va-reason">${esc(row.reason)}</span>
-        </div>`).join('')
-      const card = pending ? `
-        <div class="va-card">
-          <div class="va-card-head">${esc(pendingTitle(pending))}</div>
-          <div class="va-card-detail">${esc(pendingDetail(pending))}</div>
-          <div class="va-actions">${pendingActionsHtml(pending, 'va-btn')}</div>
-        </div>` : ''
-      return `
-        <div class="va mood-${snap.mood}">
-          <aside class="va-stage" data-pet>
-            <div class="sprite" data-size="200"></div>
-            <div class="va-mood">${esc(Date.now() < state.petUntil ? '嘿嘿' : MOOD_LABEL[snap.mood])}</div>
-            <div class="va-clock js-clock">${clockText()}</div>
-          </aside>
-          <section class="va-main">
-            <header class="va-head">
-              <span class="va-brand">DSH BUDDY</span>
-              <span class="va-chips">${chips || '<span class="va-chip idle">全部空闲</span>'}</span>
-            </header>
-            ${card}
-            <div class="va-list">${rows || '<div class="va-empty">还没有任务，摸摸左边的小鲸鱼吧</div>'}</div>
-          </section>
-        </div>`
-    },
-  }
-
-  // ---------- variant B 剧场 ----------
-  // 平时鲸鱼居中、任务在底部走马灯；点任务或有待确认时，
-  // 鲸鱼滑到左边，右边展开气泡（会话详情 / 审批答题按钮）。
-
-  let prevOpenKeyB = ''
-
-  const VariantB = {
-    key: 'B',
-    name: '剧场',
-    render(snap, pending) {
-      const manual = state.openId ? snap.sessions.find((row) => row.id === state.openId) : undefined
-      const openKey = manual ? `s:${manual.id}` : pending ? `p:${pending.rpcId ?? pending.sessionId}` : ''
-      const settled = openKey === prevOpenKeyB
-      prevOpenKeyB = openKey
-      const activeId = manual?.id ?? pending?.sessionId
-
-      const chips = snap.sessions.slice(0, 8).map((row) => `
-        <button class="vb-chip ${row.status}${row.id === activeId ? ' active' : ''}" data-open="${esc(row.id)}">
-          <span class="vb-dot ${row.status}"></span>${esc(row.title)}
-        </button>`).join('')
-
-      let bubble = ''
-      if (manual && !(pending && pending.sessionId === manual.id)) {
-        bubble = `
-          <div class="vb-bubble ${manual.status}">
-            <button class="vb-close" data-close>×</button>
-            <div class="vb-bubble-head ${manual.status}">${esc(STATUS_LABEL[manual.status])} · ${esc(manual.reason)}</div>
-            <div class="vb-bubble-title">${esc(manual.title)}</div>
-            <div class="vb-bubble-actions">
-              <button class="vb-btn" data-nav="${esc(manual.id)}">去主屏看</button>
-            </div>
-          </div>`
-      } else if (pending) {
-        const session = snap.sessions.find((row) => row.id === pending.sessionId)
-        bubble = `
-          <div class="vb-bubble need">
-            <div class="vb-bubble-head need">${esc(pendingTitle(pending))}</div>
-            ${session ? `<div class="vb-bubble-title">${esc(session.title)}</div>` : ''}
-            <div class="vb-bubble-detail">${esc(pendingDetail(pending))}</div>
-            <div class="vb-bubble-actions">${pendingActionsHtml(pending, 'vb-btn')}</div>
-          </div>`
-      }
-      const open = Boolean(bubble)
-
-      const stage = `
-        <div class="vb-stage" data-pet>
-          <div class="sprite" data-size="${open ? 190 : 230}"></div>
-          ${open ? `<div class="vb-mood-mini">${esc(Date.now() < state.petUntil ? '嘿嘿' : MOOD_LABEL[snap.mood])}</div>` : ''}
-        </div>`
-      const side = open ? bubble : `
-        <div class="vb-side">
-          <div class="vb-word ${snap.mood}">${esc(Date.now() < state.petUntil ? '嘿嘿' : MOOD_LABEL[snap.mood])}</div>
-          <div class="vb-sub">${esc(summaryText(snap.counts))}</div>
-        </div>`
-
-      return `
-        <div class="vb mood-${snap.mood}">
-          <header class="vb-top">
-            <span class="vb-brand">DSH BUDDY</span>
-            <span class="vb-clock js-clock">${clockText()}</span>
-          </header>
-          <div class="vb-center${open ? ' open' : ''}${settled ? ' settled' : ''}">
-            ${stage}
-            ${side}
-          </div>
-          <footer class="vb-ticker">${chips || '<span class="vb-none">没有任务</span>'}</footer>
-        </div>`
-    },
-  }
-
-  // ---------- variant C 指挥板 ----------
-
-  const VariantC = {
-    key: 'C',
-    name: '指挥板',
-    render(snap, pending) {
-      const counts = ['attention', 'error', 'running', 'done'].map((k) => `
-        <span class="vc-count ${k}${snap.counts[k] ? '' : ' zero'}">
-          <b>${snap.counts[k]}</b>${STATUS_LABEL[k]}
-        </span>`).join('')
-      const rows = snap.sessions.slice(0, pending ? 4 : 4).map((row) => {
-        const isPending = pending && pending.sessionId === row.id
-        const expand = isPending ? `
-          <div class="vc-expand">
-            <div class="vc-expand-detail">${esc(pendingDetail(pending))}</div>
-            <div class="vc-expand-actions">${pendingActionsHtml(pending, 'vc-btn')}</div>
-          </div>` : ''
-        return `
-          <div class="vc-row ${row.status}${isPending ? ' open' : ''}">
-            <div class="vc-row-main" data-nav="${esc(row.id)}">
-              <span class="vc-glyph ${row.status}"></span>
-              <span class="vc-title">${esc(row.title)}</span>
-              <span class="vc-reason">${esc(row.reason)}</span>
-            </div>
-            ${expand}
-          </div>`
-      }).join('')
-      return `
-        <div class="vc mood-${snap.mood}">
-          <header class="vc-head">
-            <div class="vc-mascot" data-pet>
-              <div class="sprite" data-size="84"></div>
-            </div>
-            <div class="vc-counts">${counts}</div>
-            <div class="vc-clock js-clock">${clockText()}</div>
-          </header>
-          <div class="vc-rows">${rows || '<div class="vc-empty">没有任务 · 鲸鱼在上面打盹</div>'}</div>
-        </div>`
-    },
-  }
-
-  const REGISTRY = { A: VariantA, B: VariantB, C: VariantC }
-
-  // ---------- render + switcher ----------
-
+  let prevOpenKey = ''
   let lastHtml = ''
+
+  function layoutHtml(snap, pending) {
+    const manual = state.openId ? snap.sessions.find((row) => row.id === state.openId) : undefined
+    const openKey = manual ? `s:${manual.id}` : pending ? `p:${pending.rpcId ?? pending.sessionId}` : ''
+    const settled = openKey === prevOpenKey
+    prevOpenKey = openKey
+    const activeId = manual?.id ?? pending?.sessionId
+
+    const chips = snap.sessions.slice(0, 8).map((row) => `
+      <button class="chip ${row.status}${row.id === activeId ? ' active' : ''}" data-open="${esc(row.id)}">
+        <span class="dot ${row.status}"></span>${esc(row.title)}
+      </button>`).join('')
+
+    let bubble = ''
+    if (manual && !(pending && pending.sessionId === manual.id)) {
+      bubble = `
+        <div class="bubble ${manual.status}">
+          <button class="close" data-close>×</button>
+          <div class="bubble-head ${manual.status}">${esc(STATUS_LABEL[manual.status])} · ${esc(manual.reason)}</div>
+          <div class="bubble-title">${esc(manual.title)}</div>
+          <div class="bubble-actions">
+            <button class="btn" data-nav="${esc(manual.id)}">去主屏看</button>
+          </div>
+        </div>`
+    } else if (pending) {
+      const session = snap.sessions.find((row) => row.id === pending.sessionId)
+      bubble = `
+        <div class="bubble need">
+          <div class="bubble-head need">${esc(pendingTitle(pending))}</div>
+          ${session ? `<div class="bubble-title">${esc(session.title)}</div>` : ''}
+          <div class="bubble-detail">${esc(pendingDetail(pending))}</div>
+          <div class="bubble-actions">${pendingActionsHtml(pending)}</div>
+        </div>`
+    }
+    const open = Boolean(bubble)
+    const moodText = Date.now() < state.petUntil ? '嘿嘿' : MOOD_LABEL[snap.mood]
+    const stage = `
+      <div class="stage" data-pet>
+        <div class="sprite" data-size="${open ? 190 : 230}"></div>
+        ${open ? `<div class="mood-mini">${esc(moodText)}</div>` : ''}
+      </div>`
+    const side = open ? bubble : `
+      <div class="side">
+        <div class="word ${snap.mood}">${esc(moodText)}</div>
+        <div class="sub">${esc(summaryText(snap.counts))}</div>
+      </div>`
+
+    return `
+      <div class="app mood-${snap.mood}">
+        <header class="top">
+          <span class="brand">DSH BUDDY</span>
+          <span class="clock js-clock">${clockText()}</span>
+        </header>
+        <div class="center${open ? ' open' : ''}${settled ? ' settled' : ''}">
+          ${stage}
+          ${side}
+        </div>
+        <footer class="ticker">${chips || '<span class="none">没有任务</span>'}</footer>
+      </div>`
+  }
 
   function render() {
     const snap = mergeSnapshot()
     const pending = firstPending(snap)
     if (state.openId && !snap.sessions.some((row) => row.id === state.openId)) state.openId = null
-    const html = REGISTRY[variant].render(snap, pending)
+    const html = layoutHtml(snap, pending)
     if (html !== lastHtml) {
       root.innerHTML = html
       lastHtml = html
     }
     offlineEl.hidden = state.buddyLive || MOCK
-    renderSwitcher()
     tickSprites()
   }
-
-  function renderSwitcher() {
-    let bar = document.getElementById('proto-switcher')
-    if (!bar) {
-      bar = document.createElement('div')
-      bar.id = 'proto-switcher'
-      document.body.appendChild(bar)
-    }
-    const v = REGISTRY[variant]
-    bar.innerHTML = `
-      <button data-cycle="-1">‹</button>
-      <span>${v.key} — ${v.name}${MOCK ? ' · mock' : ''}</span>
-      <button data-cycle="1">›</button>`
-  }
-
-  function cycle(delta) {
-    const index = (VARIANTS.indexOf(variant) + delta + VARIANTS.length) % VARIANTS.length
-    variant = VARIANTS[index]
-    const next = new URLSearchParams(location.search)
-    next.set('variant', variant)
-    history.replaceState(null, '', `${location.pathname}?${next}`)
-    render()
-  }
-
-  // ---------- events ----------
 
   document.body.addEventListener('pointerdown', (event) => {
     const petTarget = event.target instanceof Element ? event.target.closest('[data-pet]') : null
@@ -450,13 +322,9 @@
 
   document.body.addEventListener('click', (event) => {
     const target = event.target instanceof Element
-      ? event.target.closest('[data-nav],[data-approve],[data-opt],[data-confirm],[data-cycle],[data-open],[data-close]')
+      ? event.target.closest('[data-nav],[data-approve],[data-opt],[data-confirm],[data-open],[data-close]')
       : null
     if (!(target instanceof HTMLElement)) return
-    if (target.dataset.cycle) {
-      cycle(Number(target.dataset.cycle))
-      return
-    }
     if (target.hasAttribute('data-close')) {
       state.openId = null
       render()
@@ -498,15 +366,6 @@
       void respond(item, questionBody(item, [{ id: question.id, selected: [...state.selected] }]))
     }
   })
-
-  document.addEventListener('keydown', (event) => {
-    const el = document.activeElement
-    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
-    if (event.key === 'ArrowLeft') cycle(-1)
-    if (event.key === 'ArrowRight') cycle(1)
-  })
-
-  // ---------- SSE ----------
 
   function parseFrame(raw) {
     try {
@@ -594,8 +453,6 @@
       if (envelope) onMux(envelope)
     }, () => {})
   }
-
-  // ---------- loops ----------
 
   setInterval(() => {
     state.frame += 1

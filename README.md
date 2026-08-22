@@ -12,7 +12,19 @@ Pixel whale on the AM01S `960×400` USB sub-screen. It is a mood dashboard for e
 
 ## Layout
 
-Left ~340px: sprite stage. Right ~620px: pending answer card + session list. Designed for the native `960×400` panel, dark, local animation only.
+Theater: whale centered with a large mood word, sessions as a ticker along the bottom. Tap a chip, or a confirmation arriving, slides the whale left and opens a speech bubble on the right (session detail, or approve / pick buttons). Designed for the native `960×400` panel.
+
+UI variants from the prototype live on branch `prototype/ui-variants`. The shipped page is variant B (theater + bubble). The whale is a soft cornflower blue (hue +50°, saturation ×0.70, value ×1.30 from the teal original).
+
+## Sprites
+
+`page/buddy-sprites.orig.png` is the generated sheet. Recolor / recut / swap the original, then regenerate:
+
+```bash
+python3 scripts/normalize-sprites.py
+```
+
+That writes `page/buddy-sprites.png` (8×6 cells of 192px, transparent background, blue recolor).
 
 ## Dev / lab
 
@@ -27,3 +39,5 @@ DSH_HOME=~/.dsh-lab dsh plugin --profile web add link:$PWD
 ```
 
 Kiosk target: `http://127.0.0.1:3082/buddy`. The GTK4 + WebKit shell fullscreen's onto the 960×400 monitor when present; Chromium `--app` is the fallback.
+
+Debug query params (kiosk-safe, no host mutations): `?mock=1` injects fake sessions; `?open=<id>` pre-opens a bubble.
