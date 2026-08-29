@@ -16,6 +16,16 @@ DEFAULT_URL = os.environ.get("DSH_BUDDY_URL", "http://127.0.0.1:3082/buddy")
 TARGET_W, TARGET_H = 960, 400
 
 
+def pick_size_index(sizes: list[tuple[int, int]]) -> int | None:
+    fallback = None
+    for index, (width, height) in enumerate(sizes):
+        if width == TARGET_W and height == TARGET_H:
+            return index
+        if width <= TARGET_W and height <= TARGET_H:
+            fallback = index
+    return fallback
+
+
 def wait_for_url(url: str, timeout_s: float = 30.0) -> None:
     deadline = time.time() + timeout_s
     last = None
@@ -39,15 +49,12 @@ def gtk4_webkit6():
 
     def pick_monitor(display: Gdk.Display):
         monitors = display.get_monitors()
-        fallback = None
+        sizes = []
         for index in range(monitors.get_n_items()):
-            monitor = monitors.get_item(index)
-            geometry = monitor.get_geometry()
-            if geometry.width == TARGET_W and geometry.height == TARGET_H:
-                return monitor
-            if geometry.width <= TARGET_W and geometry.height <= TARGET_H:
-                fallback = monitor
-        return fallback
+            geometry = monitors.get_item(index).get_geometry()
+            sizes.append((geometry.width, geometry.height))
+        chosen = pick_size_index(sizes)
+        return None if chosen is None else monitors.get_item(chosen)
 
     class BuddyWindow(Gtk.Window):
         def __init__(self, url: str) -> None:
@@ -89,14 +96,11 @@ def gtk3_webkit2():
     from gi.repository import Gdk, Gtk, WebKit2
 
     def pick_monitor_index(display: Gdk.Display) -> int | None:
-        fallback = None
+        sizes = []
         for index in range(display.get_n_monitors()):
             geometry = display.get_monitor(index).get_geometry()
-            if geometry.width == TARGET_W and geometry.height == TARGET_H:
-                return index
-            if geometry.width <= TARGET_W and geometry.height <= TARGET_H:
-                fallback = index
-        return fallback
+            sizes.append((geometry.width, geometry.height))
+        return pick_size_index(sizes)
 
     class BuddyWindow(Gtk.Window):
         def __init__(self, url: str) -> None:
