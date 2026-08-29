@@ -367,66 +367,6 @@
     }
   })
 
-  // alpha.1 /api/remote.mux downlink items: {type:'emit'|'waterfall'|'cancel', event, args|request}
-  function parseFrame(raw) {
-    try {
-      const value = JSON.parse(raw)
-      if (!value || (value.type !== 'emit' && value.type !== 'waterfall')) return undefined
-      if (typeof value.event !== 'string') return undefined
-      const payload = value.type === 'waterfall' ? value.request : (Array.isArray(value.args) ? value.args[0] : undefined)
-      if (typeof payload !== 'object' || payload === null) return undefined
-      return { event: value.event, payload }
-    } catch {
-      return undefined
-    }
-  }
-
-  function onMux(envelope) {
-    const payload = envelope.payload
-    // Titles: alpha.1 carries them on the session list snapshot, not as
-    // projection broadcasts; the kiosk refetches the list on each event.
-    if (envelope.event === 'session-title/updated' && typeof payload?.sessionId === 'string' && typeof payload?.title === 'string') {
-      state.titles.set(payload.sessionId, payload.title)
-      render()
-      return
-    }
-    if (envelope.event === 'approval/request') {
-      const approvalId = payload.callId ?? payload.toolName
-      state.pending.set(`a:${approvalId}`, {
-        kind: 'approval',
-        rpcId: envelope.eventId,
-        sessionId: undefined,
-        approvalId,
-        toolName: payload.toolName,
-        reason: payload.reason,
-      })
-      state.selected.clear()
-      render()
-      return
-    }
-    if (envelope.event === 'user-questions/request') {
-      const questions = Array.isArray(payload.questions) ? payload.questions : []
-      const key = `q:${payload.key ?? Date.now()}`
-      const kind = questions.some((item) => item?.intent?.kind === 'plan-review') ? 'plan-review' : 'question'
-      state.pending.set(key, {
-        kind,
-        rpcId: envelope.eventId,
-        sessionId: undefined,
-        questions,
-      })
-      state.selected.clear()
-      render()
-      return
-    }
-    if (envelope.event === 'approval/outcome' || envelope.event === 'user-questions/answered') {
-      const id = payload?.callId ?? payload?.key
-      if (typeof id === 'string') {
-        state.pending.delete(id.startsWith('a:') || id.startsWith('q:') ? id : `a:${id}`)
-      }
-      render()
-    }
-  }
-
   function openSse(url, onMessage, onStatus) {
     const stream = new EventSource(url)
     stream.onopen = () => onStatus(true)
@@ -453,11 +393,6 @@
       state.buddyLive = live
       render()
     })
-
-    openSse('/api/remote.mux', (data) => {
-      const envelope = parseFrame(data)
-      if (envelope) onMux(envelope)
-    }, () => {})
   }
 
   setInterval(() => {

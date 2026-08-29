@@ -30,7 +30,7 @@ const client: UserConfig = {
     neverBundle: [
       '@deepseek-ai/cordis',
       '@deepseek-ai/dsh-client-connection/client',
-      '@deepseek-ai/dsh-client-runtime/client',
+      '@deepseek-ai/dsh-client-ui-session/client',
     ],
   },
   outputOptions: {

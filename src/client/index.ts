@@ -1,13 +1,16 @@
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { BUDDY_CLIENT_EVENTS_PATH } from '../contract.ts'
 
 export const name = 'dsh-buddy-client'
 export const inject = ['sessions']
 
+type SessionOpener = { open(sessionId: string): void }
+
 export function apply(ctx: ClientContext): void {
+  const sessions = (ctx as ClientContext & { sessions?: SessionOpener }).sessions
   const open = (sessionId: string): void => {
     try {
-      ctx.sessions.open(sessionId as never)
+      sessions?.open(sessionId)
     } catch {
       // Session may have disappeared between the tap and the host fan-out.
     }
