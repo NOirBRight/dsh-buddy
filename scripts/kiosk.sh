@@ -5,12 +5,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 URL="${DSH_BUDDY_URL:-http://127.0.0.1:3082/buddy}"
 export DSH_BUDDY_URL="$URL"
 
-if python3 - <<'PY'
-import gi, sys
-gi.require_version('Gtk', '4.0')
-gi.require_version('WebKit', '6.0')
-from gi.repository import Gtk, WebKit  # noqa: F401
-PY
+if python3 -c "import gi; gi.require_version('WebKit','6.0')" 2>/dev/null \
+  || python3 -c "import gi; gi.require_version('WebKit2','4.1')" 2>/dev/null
 then
   exec python3 "$ROOT/scripts/kiosk.py" "$@"
 fi
