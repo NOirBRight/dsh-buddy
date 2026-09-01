@@ -1,6 +1,6 @@
 // Theater layout: whale centered, sessions as a ticker. Tap a chip or a
 // pending confirmation slides the whale left and opens a speech bubble.
-// Debug: ?mock=1 injects fake sessions; ?open=<id> pre-opens a bubble.
+// ?open=<id> pre-opens a bubble.
 (() => {
   const MOOD_LABEL = {
     'needs-you': '等你点一下',
@@ -16,12 +16,23 @@
   }
   const STATUS_LABEL = { attention: '等你', error: '出错', running: '干活', done: '完成', idle: '空闲' }
   const MOOD_ROW = { idle: 0, working: 1, 'needs-you': 2, 'done-unseen': 3, error: 4, pet: 5 }
+  const MOODS = new Set(Object.keys(MOOD_LABEL))
+  const STATUSES = new Set(Object.keys(STATUS_LABEL))
+  const PENDING_KINDS = new Set(Object.keys(REASON))
+  const COUNT_KEYS = ['attention', 'error', 'running', 'done', 'idle']
+  const MAX_TEXT = 8 * 1024
+  const MAX_ID = 256
+  const MAX_QUESTIONS = 32
+  const MAX_OPTIONS = 64
+  const MAX_SESSIONS = 1024
+  const MAX_SSE_EVENT_DATA = 512 * 1024
+  const UTF8_ENCODER = new TextEncoder()
+  const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/
   const FRAMES = 8
   const SHEET_COLS = 8
   const SHEET_ROWS = 6
 
   const params = new URLSearchParams(location.search)
-  const MOCK = params.get('mock') === '1'
 
   const state = {
     snapshot: { mood: 'idle', counts: { attention: 0, error: 0, running: 0, done: 0, idle: 0 }, sessions: [], revision: 0 },
@@ -30,39 +41,8 @@
     petUntil: 0,
     frame: 0,
     buddyLive: false,
-    selected: new Set(),
+    selected: new Map(),
     openId: params.get('open') || null,
-  }
-
-  if (MOCK) {
-    const now = Date.now()
-    state.snapshot = {
-      mood: 'needs-you',
-      counts: { attention: 1, error: 1, running: 2, done: 1, idle: 1 },
-      revision: 1,
-      sessions: [
-        { id: 'mock-1', title: '重构支付回调的重试逻辑', status: 'attention', reason: '等待回答', pendingKind: 'question', updatedAt: now },
-        { id: 'mock-2', title: '给 dsh-buddy 写单元测试', status: 'running', reason: '正在跑 vitest', updatedAt: now - 60_000 },
-        { id: 'mock-3', title: '爬取季报并生成摘要', status: 'error', reason: 'fetch 超时 3 次', updatedAt: now - 120_000 },
-        { id: 'mock-4', title: '整理 obsidian 周记', status: 'running', reason: '工具调用中', updatedAt: now - 30_000 },
-        { id: 'mock-5', title: '用 Grok 生成清晨窗台静物图', status: 'done', reason: '完成，未查看', updatedAt: now - 300_000 },
-        { id: 'mock-6', title: '600519贵州茅台投资分析', status: 'idle', reason: '空闲', updatedAt: now - 900_000 },
-      ],
-    }
-    state.pending.set('q:mock', {
-      kind: 'question',
-      rpcId: 'mock',
-      sessionId: 'mock-1',
-      questions: [{
-        id: 'q1',
-        header: '部署确认',
-        question: '构建通过了，把这次改动发到哪个环境？',
-        options: [
-          { label: '只发 lab', description: '3082 试验面' },
-          { label: '发 production', description: '需要先打 tag' },
-        ],
-      }],
-    })
   }
 
   const root = document.getElementById('root')
@@ -108,6 +88,118 @@
     return { kind: attention.pendingKind ?? 'question', sessionId: attention.id, hostOnly: true }
   }
 
+  function removePending(requestId) {
+    for (const [key, pending] of state.pending) {
+      if (pending.requestId === requestId) state.pending.delete(key)
+    }
+    state.selected.clear()
+  }
+
+  function isRecord(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+  }
+
+  function exactKeys(value, required, optional = []) {
+    if (!isRecord(value)) return false
+    const allowed = new Set([...required, ...optional])
+    return required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => allowed.has(key))
+  }
+
+  function boundedString(value, limit = MAX_TEXT) {
+    return typeof value === 'string' && value.length <= limit
+  }
+
+  function nonEmptyString(value, limit = MAX_TEXT) {
+    return typeof value === 'string' && value.length > 0 && value.length <= limit
+  }
+
+  function validId(value) {
+    return nonEmptyString(value, MAX_ID) && !CONTROL_CHARACTERS.test(value)
+  }
+
+  function optionalString(value, limit = MAX_TEXT) {
+    return value === undefined || boundedString(value, limit)
+  }
+
+  function validQuestionOption(value) {
+    return exactKeys(value, ['label'], ['description']) && nonEmptyString(value.label) && optionalString(value.description)
+  }
+
+  function validQuestion(value) {
+    if (!exactKeys(value, ['id', 'question'], ['detail', 'header', 'options', 'multiSelect', 'intent']) || !validId(value.id) || !boundedString(value.question) || !optionalString(value.detail) || !optionalString(value.header, MAX_ID)) return false
+    if (value.options !== undefined && (!Array.isArray(value.options) || value.options.length === 0 || value.options.length > MAX_OPTIONS || !value.options.every(validQuestionOption))) return false
+    if (value.multiSelect !== undefined && typeof value.multiSelect !== 'boolean') return false
+    if (value.intent !== undefined && (!exactKeys(value.intent, ['kind'], ['approve']) || !nonEmptyString(value.intent.kind, MAX_ID) || !optionalString(value.intent.approve))) return false
+    return true
+  }
+
+  function validInteraction(value) {
+    if (!isRecord(value) || !validId(value.requestId) || !validId(value.sessionId) || !PENDING_KINDS.has(value.kind)) return false
+    if (value.kind === 'approval') return exactKeys(value, ['kind', 'requestId', 'sessionId', 'toolName'], ['callId', 'reason']) && nonEmptyString(value.toolName) && optionalString(value.callId, MAX_ID) && optionalString(value.reason)
+    if (!exactKeys(value, ['kind', 'requestId', 'sessionId', 'questions'])) return false
+    if (!Array.isArray(value.questions) || value.questions.length === 0 || value.questions.length > MAX_QUESTIONS) return false
+    const ids = new Set()
+    return value.questions.every((question) => {
+      if (!validQuestion(question) || ids.has(question.id)) return false
+      ids.add(question.id)
+      return true
+    })
+  }
+
+  function validSession(value) {
+    if (!exactKeys(value, ['id', 'title', 'status', 'reason', 'updatedAt'], ['pendingKind', 'lastError']) || !validId(value.id) || !boundedString(value.title) || !STATUSES.has(value.status) || !boundedString(value.reason) || !optionalString(value.lastError) || !Number.isFinite(value.updatedAt)) return false
+    const hasPending = value.pendingKind !== undefined
+    return (!hasPending || PENDING_KINDS.has(value.pendingKind)) && (value.status === 'attention') === hasPending
+  }
+
+  function moodForCounts(counts) {
+    if (counts.attention > 0) return 'needs-you'
+    if (counts.error > 0) return 'error'
+    if (counts.running > 0) return 'working'
+    if (counts.done > 0) return 'done-unseen'
+    return 'idle'
+  }
+
+  function validSnapshot(value) {
+    if (!exactKeys(value, ['mood', 'counts', 'sessions', 'revision']) || !MOODS.has(value.mood) || !Number.isSafeInteger(value.revision) || value.revision < 0 || !exactKeys(value.counts, COUNT_KEYS) || !COUNT_KEYS.every((key) => Number.isSafeInteger(value.counts[key]) && value.counts[key] >= 0) || !Array.isArray(value.sessions) || value.sessions.length > MAX_SESSIONS) return false
+    const ids = new Set()
+    const actualCounts = { attention: 0, error: 0, running: 0, done: 0, idle: 0 }
+    for (const row of value.sessions) {
+      if (!validSession(row) || ids.has(row.id)) return false
+      ids.add(row.id)
+      actualCounts[row.status] += 1
+    }
+    return COUNT_KEYS.every((key) => value.counts[key] === actualCounts[key]) && moodForCounts(actualCounts) === value.mood
+  }
+
+  function validFrame(value) {
+    if (!isRecord(value) || typeof value.type !== 'string') return false
+    if (value.type === 'snapshot') return exactKeys(value, ['type', 'snapshot']) && validSnapshot(value.snapshot)
+    if (value.type === 'interaction-requested') return exactKeys(value, ['type', 'interaction']) && validInteraction(value.interaction)
+    if (value.type === 'interaction-resolved' || value.type === 'interaction-cancelled') return exactKeys(value, ['type', 'requestId']) && validId(value.requestId)
+    if (value.type === 'navigate-ack') return exactKeys(value, ['type', 'sessionId']) && validId(value.sessionId)
+    return false
+  }
+  function safeStatus(value) {
+    return STATUSES.has(value) ? value : 'idle'
+  }
+
+  function safeMood(value) {
+    return MOODS.has(value) ? value : 'idle'
+  }
+
+  function prunePending(snapshot) {
+    const activeSessions = new Set((snapshot.sessions ?? []).filter((row) => row.pendingKind).map((row) => row.id))
+    let changed = false
+    for (const [key, pending] of state.pending) {
+      if (!activeSessions.has(pending.sessionId)) {
+        state.pending.delete(key)
+        changed = true
+      }
+    }
+    if (changed) state.selected.clear()
+  }
+
   function escapeHtml(value) {
     return String(value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
   }
@@ -129,7 +221,6 @@
   }
 
   async function navigate(sessionId) {
-    if (sessionId.startsWith('mock-')) return
     try {
       await fetch('/buddy/navigate', {
         method: 'POST',
@@ -140,38 +231,38 @@
   }
 
   async function respond(pending, body) {
-    if (pending.rpcId === 'mock') {
-      state.pending.delete('q:mock')
-      const row = state.snapshot.sessions.find((r) => r.id === pending.sessionId)
-      if (row) { row.status = 'running'; row.reason = '收到回答，继续干' }
-      state.selected.clear()
-      render()
-      return
-    }
     try {
-      await fetch('/api/respond', {
+      const response = await fetch('/buddy/respond', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       })
-      state.selected.clear()
-    } catch { /* mux resolved frame will catch up */ }
+      if (!response.ok) throw new Error('interaction response rejected')
+      removePending(pending.requestId)
+      render()
+    } catch { /* the pending frame remains visible for a retry */ }
   }
 
   function approvalBody(pending, outcome) {
-    return {
-      type: 'client-response',
-      rpcId: pending.rpcId,
-      result: { ok: true, value: { sessionId: pending.sessionId, approvalId: pending.approvalId, outcome } },
-    }
+    return { requestId: pending.requestId, action: 'approval', outcome }
   }
 
   function questionBody(pending, answers) {
-    return {
-      type: 'client-response',
-      rpcId: pending.rpcId,
-      result: { ok: true, value: { sessionId: pending.sessionId, answer: { answers } } },
-    }
+    return { requestId: pending.requestId, action: 'question', answers }
+  }
+
+  function questionAnswers(pending) {
+    return (pending.questions ?? []).map((question) => ({
+      id: question.id,
+      selected: [...(state.selected.get(question.id) ?? new Set())],
+    }))
+  }
+
+  function hasAllQuestionAnswers(pending) {
+    return (pending.questions ?? []).length > 0 && (pending.questions ?? []).every((question) => {
+      if ((question.options ?? []).length === 0) return false
+      return (state.selected.get(question.id)?.size ?? 0) > 0
+    })
   }
 
   function moodNow() {
@@ -205,24 +296,25 @@
 
   function pendingActionsHtml(pending) {
     if (pending.hostOnly) {
-      return `<button class="btn" data-nav="${esc(pending.sessionId)}">去主屏看</button>`
+      return `<button class='btn' data-nav='${esc(pending.sessionId)}'>去主屏看</button>`
     }
     if (pending.kind === 'approval') {
       return `
-        <button class="btn" data-approve="allowed-once">批准</button>
-        <button class="btn danger" data-approve="rejected">拒绝</button>`
+        <button class='btn' data-approve='allowed-once'>批准</button>
+        <button class='btn danger' data-approve='rejected'>拒绝</button>`
     }
-    const question = pending.questions[0]
-    const options = question.options ?? []
-    if (options.length === 0) {
-      return `<button class="btn" data-nav="${esc(pending.sessionId)}">去主屏回答</button>`
-    }
-    const picks = options.map((option, index) => `
-      <button class="btn pick${state.selected.has(option.label) ? ' on' : ''}" data-opt="${index}">
-        ${esc(option.label)}${option.description ? `<small>${esc(option.description)}</small>` : ''}
-      </button>`).join('')
-    const confirm = question.multiSelect ? '<button class="btn" data-confirm="1">确认</button>' : ''
-    return picks + confirm
+    const questions = pending.questions ?? []
+    return questions.map((question) => {
+      const options = question.options ?? []
+      if (options.length === 0) return `<button class='btn' data-nav='${esc(pending.sessionId)}'>去主屏回答</button>`
+      const selected = state.selected.get(question.id) ?? new Set()
+      const picks = options.map((option, index) => `
+        <button class='btn pick${selected.has(option.label) ? ' on' : ''}' data-opt='${index}' data-question='${esc(question.id)}'>
+          ${esc(option.label)}${option.description ? `<small>${esc(option.description)}</small>` : ''}
+        </button>`).join('')
+      const confirm = question.multiSelect ? `<button class='btn' data-confirm='${esc(question.id)}'>确认</button>` : ''
+      return `<div class='question-actions'>${picks}${confirm}</div>`
+    }).join('')
   }
 
   function pendingTitle(pending) {
@@ -244,22 +336,26 @@
 
   function layoutHtml(snap, pending) {
     const manual = state.openId ? snap.sessions.find((row) => row.id === state.openId) : undefined
-    const openKey = manual ? `s:${manual.id}` : pending ? `p:${pending.rpcId ?? pending.sessionId}` : ''
+    const openKey = manual ? `s:${manual.id}` : pending ? `p:${pending.requestId ?? pending.sessionId}` : ''
     const settled = openKey === prevOpenKey
     prevOpenKey = openKey
     const activeId = manual?.id ?? pending?.sessionId
 
-    const chips = snap.sessions.slice(0, 8).map((row) => `
-      <button class="chip ${row.status}${row.id === activeId ? ' active' : ''}" data-open="${esc(row.id)}">
-        <span class="dot ${row.status}"></span>${esc(row.title)}
-      </button>`).join('')
+    const chips = snap.sessions.slice(0, 8).map((row) => {
+      const status = safeStatus(row.status)
+      return `
+      <button class="chip ${esc(status)}${row.id === activeId ? ' active' : ''}" data-open="${esc(row.id)}">
+        <span class="dot ${esc(status)}"></span>${esc(row.title)}
+      </button>`
+    }).join('')
 
     let bubble = ''
     if (manual && !(pending && pending.sessionId === manual.id)) {
+      const status = safeStatus(manual.status)
       bubble = `
-        <div class="bubble ${manual.status}">
+        <div class="bubble ${esc(status)}">
           <button class="close" data-close>×</button>
-          <div class="bubble-head ${manual.status}">${esc(STATUS_LABEL[manual.status])} · ${esc(manual.reason)}</div>
+          <div class="bubble-head ${esc(status)}">${esc(STATUS_LABEL[status])} · ${esc(manual.reason)}</div>
           <div class="bubble-title">${esc(manual.title)}</div>
           <div class="bubble-actions">
             <button class="btn" data-nav="${esc(manual.id)}">去主屏看</button>
@@ -276,7 +372,8 @@
         </div>`
     }
     const open = Boolean(bubble)
-    const moodText = Date.now() < state.petUntil ? '嘿嘿' : MOOD_LABEL[snap.mood]
+    const mood = safeMood(snap.mood)
+    const moodText = Date.now() < state.petUntil ? '嘿嘿' : MOOD_LABEL[mood]
     const stage = `
       <div class="stage" data-pet>
         <div class="sprite" data-size="${open ? 190 : 230}"></div>
@@ -284,12 +381,12 @@
       </div>`
     const side = open ? bubble : `
       <div class="side">
-        <div class="word ${snap.mood}">${esc(moodText)}</div>
+        <div class="word ${esc(mood)}">${esc(moodText)}</div>
         <div class="sub">${esc(summaryText(snap.counts))}</div>
       </div>`
 
     return `
-      <div class="app mood-${snap.mood}">
+      <div class="app mood-${esc(mood)}">
         <header class="top">
           <span class="brand">DSH BUDDY</span>
           <span class="clock js-clock">${clockText()}</span>
@@ -311,7 +408,7 @@
       root.innerHTML = html
       lastHtml = html
     }
-    offlineEl.hidden = state.buddyLive || MOCK
+    offlineEl.hidden = state.buddyLive
     tickSprites()
   }
 
@@ -341,85 +438,37 @@
     }
     const pending = firstPending(mergeSnapshot())
     if (!pending) return
-    if (target.dataset.approve && 'rpcId' in pending && pending.kind === 'approval') {
+    if (target.dataset.approve && 'requestId' in pending && pending.kind === 'approval') {
       void respond(pending, approvalBody(pending, target.dataset.approve))
       return
     }
+    const item = pending.kind !== 'approval' && 'questions' in pending ? pending : undefined
+    if (!item) return
     if (target.dataset.opt !== undefined) {
-      const item = pending.kind !== 'approval' && 'questions' in pending ? pending : undefined
-      const question = item?.questions?.[0]
+      const question = item.questions.find((candidate) => candidate.id === target.dataset.question) ?? item.questions[0]
       const option = question?.options?.[Number(target.dataset.opt)]
-      if (!item || !question || !option) return
+      if (!question || !option) return
+      const selected = state.selected.get(question.id) ?? new Set()
       if (question.multiSelect) {
-        if (state.selected.has(option.label)) state.selected.delete(option.label)
-        else state.selected.add(option.label)
+        if (selected.has(option.label)) selected.delete(option.label)
+        else selected.add(option.label)
+        state.selected.set(question.id, selected)
         render()
         return
       }
-      void respond(item, questionBody(item, [{ id: question.id, selected: [option.label] }]))
+      selected.clear()
+      selected.add(option.label)
+      state.selected.set(question.id, selected)
+      if (hasAllQuestionAnswers(item)) void respond(item, questionBody(item, questionAnswers(item)))
+      else render()
       return
     }
     if (target.dataset.confirm) {
-      const item = pending.kind !== 'approval' && 'questions' in pending ? pending : undefined
-      const question = item?.questions?.[0]
-      if (!item || !question) return
-      void respond(item, questionBody(item, [{ id: question.id, selected: [...state.selected] }]))
+      const question = item.questions.find((candidate) => candidate.id === target.dataset.confirm)
+      if (!question || !question.multiSelect || !hasAllQuestionAnswers(item)) return
+      void respond(item, questionBody(item, questionAnswers(item)))
     }
   })
-
-  function parseFrame(raw) {
-    try {
-      const value = JSON.parse(raw)
-      if (!value || value.type !== 'server-request' || typeof value.payload !== 'object') return undefined
-      return value
-    } catch {
-      return undefined
-    }
-  }
-
-  function onMux(envelope) {
-    const payload = envelope.payload
-    if (payload.type === 'session/projection' && payload.key === 'title' && typeof payload.sessionId === 'string' && typeof payload.value === 'string') {
-      state.titles.set(payload.sessionId, payload.value)
-      render()
-      return
-    }
-    if (payload.type === 'approval/requested') {
-      state.pending.set(`a:${payload.approvalId}`, {
-        kind: 'approval',
-        rpcId: envelope.rpcId,
-        sessionId: payload.sessionId,
-        approvalId: payload.approvalId,
-        toolName: payload.toolName,
-        reason: payload.reason,
-      })
-      state.selected.clear()
-      render()
-      return
-    }
-    if (payload.type === 'approval/resolved') {
-      state.pending.delete(`a:${payload.approvalId}`)
-      render()
-      return
-    }
-    if (payload.type === 'question/requested') {
-      const questions = Array.isArray(payload.questions) ? payload.questions : []
-      const kind = questions.some((item) => item?.intent?.kind === 'plan-review') ? 'plan-review' : 'question'
-      state.pending.set(`q:${envelope.rpcId}`, {
-        kind,
-        rpcId: envelope.rpcId,
-        sessionId: payload.sessionId,
-        questions,
-      })
-      state.selected.clear()
-      render()
-      return
-    }
-    if (payload.type === 'question/resolved') {
-      state.pending.delete(`q:${payload.questionRpcId}`)
-      render()
-    }
-  }
 
   function openSse(url, onMessage, onStatus) {
     const stream = new EventSource(url)
@@ -429,30 +478,36 @@
         if (stream.readyState !== EventSource.OPEN) onStatus(false)
       }, 1200)
     }
-    stream.onmessage = (event) => onMessage(event.data)
+    stream.onmessage = (event) => {
+      if (typeof event.data !== 'string' || UTF8_ENCODER.encode(event.data).byteLength > MAX_SSE_EVENT_DATA) return
+      onMessage(event.data)
+    }
     return stream
   }
 
-  if (!MOCK) {
-    openSse('/buddy/events', (data) => {
+  openSse('/buddy/events', (data) => {
       try {
         const frame = JSON.parse(data)
-        if (frame.type === 'snapshot' && frame.snapshot) {
+        if (!validFrame(frame)) return
+        if (frame.type === 'snapshot') {
           state.snapshot = frame.snapshot
+          prunePending(frame.snapshot)
           state.buddyLive = true
           render()
+        } else if (frame.type === 'interaction-requested') {
+          if (state.pending.has(frame.interaction.requestId)) return
+          state.pending.set(frame.interaction.requestId, frame.interaction)
+          state.selected.clear()
+          render()
+        } else if (frame.type === 'interaction-resolved' || frame.type === 'interaction-cancelled') {
+          removePending(frame.requestId)
+          render()
         }
-      } catch { /* keep last snapshot */ }
+      } catch { /* keep the last valid frame */ }
     }, (live) => {
       state.buddyLive = live
       render()
-    })
-
-    openSse('/api/events.mux', (data) => {
-      const envelope = parseFrame(data)
-      if (envelope) onMux(envelope)
-    }, () => {})
-  }
+  })
 
   setInterval(() => {
     state.frame += 1

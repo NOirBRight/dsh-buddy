@@ -1,3 +1,4 @@
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {
   BuddyCounts,
   BuddyMood,
@@ -12,7 +13,7 @@ export const STATUS_ORDER: readonly SessionStatus[] = ['attention', 'error', 'ru
 export const MOOD_ORDER: readonly BuddyMood[] = ['needs-you', 'error', 'working', 'done-unseen', 'idle']
 
 export interface BuddySession {
-  id: string
+  id: SessionId
   title: string
   origin?: 'subagent'
   cwd?: string
@@ -81,7 +82,7 @@ export function emptyCounts(): BuddyCounts {
 
 export function toSessionView(session: BuddySession, status: SessionStatus): BuddySessionView {
   return {
-    id: session.id,
+    id: String(session.id),
     title: sessionLabel(session),
     status,
     reason: reasonFor(session, status),
@@ -92,7 +93,7 @@ export function toSessionView(session: BuddySession, status: SessionStatus): Bud
 }
 
 export function buildSnapshot(sessions: readonly BuddySession[], revision: number): BuddySnapshot {
-  const counts: { attention: number; error: number; running: number; done: number; idle: number } = emptyCounts()
+  const counts = { attention: 0, error: 0, running: 0, done: 0, idle: 0 }
   const rows: BuddySessionView[] = []
   for (const session of sessions) {
     const status = classifyStatus(session)

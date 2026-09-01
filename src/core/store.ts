@@ -1,21 +1,11 @@
+import type { Session, SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
+import type { Agent, AgentStatus } from '@deepseek-ai/dsh-agent'
 import type { BuddySnapshot, PendingKind } from '../contract.ts'
 import { buildSnapshot, type BuddySession } from './buddy.ts'
-import { emptyFold, foldEvent, foldEvents, type SessionEventView } from './fold.ts'
+import { emptyFold, foldEvent, foldEvents } from './fold.ts'
 
-export interface HostSessionLike {
-  readonly id: string
-  readonly header: {
-    readonly cwd?: string
-    readonly origin?: 'subagent'
-    readonly createdAt?: number
-  }
-  readonly events: readonly SessionEventView[]
-}
-
-export interface HostAgentLike {
-  readonly id: string
-  readonly status: 'idle' | 'running'
-}
+export type HostSession = Pick<Session, 'id' | 'header' | 'events'>
+export type HostAgent = Agent
 
 export class BuddyStore {
   readonly #sessions = new Map<string, BuddySession>()
@@ -24,7 +14,8 @@ export class BuddyStore {
   readonly #listeners = new Set<(snapshot: BuddySnapshot) => void>()
 
   snapshot(): BuddySnapshot {
-    return buildSnapshot([...this.#sessions.values()].filter((session) => !this.#archived.has(session.id)), this.#revision)
+    const visible = [...this.#sessions.values()].filter((session) => !this.#archived.has(String(session.id)))
+    return buildSnapshot(visible, this.#revision)
   }
 
   subscribe(listener: (snapshot: BuddySnapshot) => void): () => void {
@@ -32,87 +23,78 @@ export class BuddyStore {
     return () => { this.#listeners.delete(listener) }
   }
 
-  seed(sessions: readonly HostSessionLike[], agents: readonly HostAgentLike[], archivedIds: readonly string[] = []): void {
-    this.#sessions.clear()
-    this.#archived.clear()
-    for (const id of archivedIds) this.#archived.add(id)
-    const running = new Set(agents.filter((agent) => agent.status === 'running').map((agent) => agent.id))
+  seed(sessions: readonly HostSession[], agents: readonly HostAgent[], archivedIds: readonly SessionId[] = []): void {
+    const running = new Set(agents.filter((agent) => agent.status === 'running').map((agent) => String(agent.id)))
+    const nextSessions = new Map<string, BuddySession>()
+    const nextArchived = new Set(archivedIds.map((id) => String(id)))
+
     for (const session of sessions) {
-      const folded = foldEvents(session.events, session.header.createdAt ?? 0)
-      this.#sessions.set(session.id, {
-        id: session.id,
-        title: folded.title,
-        ...(session.header.origin === 'subagent' ? { origin: 'subagent' as const } : {}),
-        ...(session.header.cwd !== undefined ? { cwd: session.header.cwd } : {}),
-        blank: folded.blank,
-        running: running.has(session.id),
-        ...optionalPending(folded.pendingKind),
-        ...optionalError(folded.lastError),
-        completedUnseen: folded.completedUnseen && !running.has(session.id),
-        updatedAt: folded.updatedAt,
-      })
+      const folded = foldEvents(session.events, session.header.createdAt)
+      nextSessions.set(String(session.id), projectSession(session, folded, running.has(String(session.id))))
     }
+
+    this.#sessions.clear()
+    for (const [id, session] of nextSessions) this.#sessions.set(id, session)
+    this.#archived.clear()
+    for (const id of nextArchived) this.#archived.add(id)
     this.#bump()
   }
 
-  setArchived(ids: readonly string[]): void {
-    const next = new Set(ids)
+  setArchived(ids: readonly SessionId[]): void {
+    const next = new Set(ids.map((id) => String(id)))
     if (next.size === this.#archived.size && [...next].every((id) => this.#archived.has(id))) return
     this.#archived.clear()
-    for (const id of ids) this.#archived.add(id)
+    for (const id of next) this.#archived.add(id)
     this.#bump()
   }
 
-  onCreated(session: HostSessionLike): void {
-    const folded = foldEvents(session.events, session.header.createdAt ?? 0)
-    this.#sessions.set(session.id, {
-      id: session.id,
-      title: folded.title,
-      ...(session.header.origin === 'subagent' ? { origin: 'subagent' as const } : {}),
-      ...(session.header.cwd !== undefined ? { cwd: session.header.cwd } : {}),
-      blank: folded.blank,
-      running: false,
-      completedUnseen: false,
-      updatedAt: folded.updatedAt,
-    })
+  onCreated(session: HostSession): void {
+    const folded = foldEvents(session.events, session.header.createdAt)
+    this.#sessions.set(String(session.id), projectSession(session, folded, false))
     this.#bump()
   }
 
-  onDisposed(id: string): void {
-    if (!this.#sessions.delete(id)) return
-    this.#archived.delete(id)
+  onDisposed(id: SessionId): void {
+    const key = String(id)
+    if (!this.#sessions.delete(key)) return
+    this.#archived.delete(key)
     this.#bump()
   }
 
-  onEvent(sessionId: string, event: SessionEventView, header?: HostSessionLike['header']): void {
-    const current = this.#sessions.get(sessionId) ?? this.#blank(sessionId, header)
+  onEvent(sessionId: SessionId, event: SessionEvent, _header?: SessionHeader): void {
+    const key = String(sessionId)
+    const current = this.#sessions.get(key)
+    if (current === undefined) return
+    const base = current
     const folded = foldEvent({
-      title: current.title,
-      blank: current.blank,
-      ...optionalPending(current.pendingKind),
-      ...optionalError(current.lastError),
-      completedUnseen: current.completedUnseen,
-      updatedAt: current.updatedAt,
+      title: base.title,
+      blank: base.blank,
+      ...optionalPending(base.pendingKind),
+      ...optionalError(base.lastError),
+      completedUnseen: base.completedUnseen,
+      updatedAt: base.updatedAt,
     }, event)
-    this.#sessions.set(sessionId, {
-      id: current.id,
+    this.#sessions.set(key, {
+      id: base.id,
       title: folded.title,
-      ...(current.origin !== undefined ? { origin: current.origin } : {}),
-      ...(current.cwd !== undefined ? { cwd: current.cwd } : {}),
+      ...(base.origin !== undefined ? { origin: base.origin } : {}),
+      ...(base.cwd !== undefined ? { cwd: base.cwd } : {}),
       blank: folded.blank,
-      running: current.running,
+      running: base.running,
       ...optionalPending(folded.pendingKind),
       ...optionalError(folded.lastError),
-      completedUnseen: current.running ? false : folded.completedUnseen,
+      completedUnseen: folded.completedUnseen,
       updatedAt: folded.updatedAt,
     })
     this.#bump()
   }
 
-  onAgentStatus(sessionId: string, status: 'idle' | 'running', header?: HostSessionLike['header']): void {
-    const current = this.#sessions.get(sessionId) ?? this.#blank(sessionId, header)
+  onAgentStatus(sessionId: SessionId, status: AgentStatus, _header?: SessionHeader): void {
+    const key = String(sessionId)
+    const current = this.#sessions.get(key)
+    if (current === undefined) return
     const running = status === 'running'
-    this.#sessions.set(sessionId, {
+    this.#sessions.set(key, {
       ...current,
       running,
       completedUnseen: running ? false : current.completedUnseen,
@@ -121,52 +103,58 @@ export class BuddyStore {
     this.#bump()
   }
 
-  setMuxPending(sessionId: string, pendingKind: PendingKind | undefined): void {
-    const current = this.#sessions.get(sessionId)
+  setMuxPending(sessionId: SessionId, pendingKind: PendingKind | undefined): void {
+    const key = String(sessionId)
+    const current = this.#sessions.get(key)
     if (current === undefined) return
-    if (current.pendingKind === pendingKind) return
-    this.#sessions.set(sessionId, {
-      id: current.id,
-      title: current.title,
-      ...(current.origin !== undefined ? { origin: current.origin } : {}),
-      ...(current.cwd !== undefined ? { cwd: current.cwd } : {}),
-      blank: current.blank,
-      running: current.running,
-      ...optionalPending(pendingKind),
-      ...optionalError(current.lastError),
-      completedUnseen: current.completedUnseen,
-      updatedAt: Date.now(),
-    })
+    const hasPendingKind = Object.prototype.hasOwnProperty.call(current, 'pendingKind')
+    if (pendingKind === undefined ? !hasPendingKind : current.pendingKind === pendingKind) return
+    const next = { ...current, updatedAt: Date.now() }
+    if (pendingKind === undefined) delete next.pendingKind
+    else next.pendingKind = pendingKind
+    this.#sessions.set(key, next)
     this.#bump()
   }
 
-  markSeen(sessionId: string): void {
-    const current = this.#sessions.get(sessionId)
+  hasSession(sessionId: string): boolean {
+    return this.#sessions.has(sessionId)
+  }
+
+  markSeen(sessionId: SessionId): void {
+    const key = String(sessionId)
+    const current = this.#sessions.get(key)
     if (current === undefined || !current.completedUnseen) return
-    this.#sessions.set(sessionId, { ...current, completedUnseen: false })
+    this.#sessions.set(key, { ...current, completedUnseen: false })
     this.#bump()
-  }
-
-  #blank(id: string, header?: HostSessionLike['header']): BuddySession {
-    const created = emptyFold(header?.createdAt ?? Date.now())
-    const session: BuddySession = {
-      id,
-      title: created.title,
-      ...(header?.origin === 'subagent' ? { origin: 'subagent' as const } : {}),
-      ...(header?.cwd !== undefined ? { cwd: header.cwd } : {}),
-      blank: true,
-      running: false,
-      completedUnseen: false,
-      updatedAt: created.updatedAt,
-    }
-    this.#sessions.set(id, session)
-    return session
   }
 
   #bump(): void {
     this.#revision += 1
     const snapshot = this.snapshot()
-    for (const listener of this.#listeners) listener(snapshot)
+    const failures: unknown[] = []
+    for (const listener of [...this.#listeners]) {
+      try {
+        listener(snapshot)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    if (failures.length > 0) throw new AggregateError(failures, 'Buddy store subscriber notification failed')
+  }
+}
+
+function projectSession(session: HostSession, folded: ReturnType<typeof emptyFold>, running: boolean): BuddySession {
+  return {
+    id: session.id,
+    title: folded.title,
+    ...(session.header.origin !== undefined ? { origin: session.header.origin } : {}),
+    ...(session.header.cwd !== undefined ? { cwd: session.header.cwd } : {}),
+    blank: folded.blank,
+    running,
+    ...optionalPending(folded.pendingKind),
+    ...optionalError(folded.lastError),
+    completedUnseen: folded.completedUnseen,
+    updatedAt: folded.updatedAt,
   }
 }
 

@@ -1,11 +1,13 @@
+/** Fold the Host durable log into Buddy's mood state. */
+
+import type { SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
 import type { PendingKind } from '../contract.ts'
 
-export interface SessionEventView {
-  readonly type: string
-  readonly seq?: number
-  readonly time?: number
-  readonly data: Record<string, unknown>
-}
+// Session/title is published by dsh-session-title. The default case remains
+// intentional because SessionEventMap is merge-extensible.
+import type {} from '@deepseek-ai/dsh-session-title'
+
+const MAX_TITLE_BYTES = 40
 
 export interface FoldedSession {
   title: string
@@ -25,60 +27,61 @@ export function emptyFold(createdAt = 0): FoldedSession {
   }
 }
 
-export function foldEvent(state: FoldedSession, event: SessionEventView): FoldedSession {
-  const updatedAt = typeof event.time === 'number' ? event.time : state.updatedAt
-  if (event.type === 'session/title') {
-    const title = typeof event.data.title === 'string' ? event.data.title.trim() : ''
-    return { ...state, title, blank: title === '' ? state.blank : false, updatedAt }
-  }
-  if (event.type === 'user/message') {
-    const nextTitle = state.title !== '' ? state.title : firstUserText(event.data)
-    return { ...state, blank: false, title: nextTitle, updatedAt }
-  }
-  if (event.type === 'assistant/message' || event.type === 'tool/call') {
-    return { ...state, blank: false, updatedAt }
-  }
-  if (event.type === 'approval/asked') {
-    return { ...state, blank: false, pendingKind: 'approval', completedUnseen: false, updatedAt }
-  }
-  if (event.type === 'approval/decided') {
-    return omit(state, ['pendingKind'], { updatedAt })
-  }
-  if (event.type === 'turn/start') {
-    return omit(state, ['lastError'], { blank: false, completedUnseen: false, updatedAt })
-  }
-  if (event.type === 'turn/end') {
-    const reason = isObject(event.data.reason) ? event.data.reason : undefined
-    const kind = typeof reason?.kind === 'string' ? reason.kind : undefined
-    if (kind === 'error') {
-      return omit(state, ['pendingKind'], {
-        lastError: errorMessage(reason ?? {}),
-        completedUnseen: false,
-        updatedAt,
-      })
+/**
+ * Fold one official session event into Buddy state.
+ *
+ * Buddy interprets only durable events that affect its title or mood. The
+ * merge-extensible default advances recency without assuming a future event's
+ * payload, so adding another package event cannot corrupt the projection.
+ */
+export function foldEvent(state: FoldedSession, event: SessionEvent): FoldedSession {
+  const updatedAt = event.time
+
+  switch (event.type) {
+    case 'session/title': {
+      const title = clip(event.data.title)
+      return { ...state, title, blank: title === '' ? state.blank : false, updatedAt }
     }
-    if (kind === 'completed') {
-      return omit(state, ['pendingKind', 'lastError'], { completedUnseen: true, updatedAt })
+    case 'user/message': {
+      const message = event.data
+      const title = state.title === '' && message.source.kind === 'user'
+        ? firstUserText(message)
+        : state.title
+      return { ...state, blank: false, title, updatedAt }
     }
-    return omit(state, ['pendingKind'], { completedUnseen: false, updatedAt })
+    case 'assistant/message':
+    case 'tool/call':
+      return { ...state, blank: false, updatedAt }
+    case 'turn/start':
+      return omit(state, ['lastError'], { blank: false, completedUnseen: false, updatedAt })
+    case 'turn/end': {
+      const reason = event.data.reason
+      if (reason.kind === 'error') {
+        return omit(state, ['pendingKind'], {
+          lastError: errorMessage(reason.error.message),
+          completedUnseen: false,
+          updatedAt,
+        })
+      }
+      if (reason.kind === 'completed') {
+        return omit(state, ['pendingKind', 'lastError'], { completedUnseen: true, updatedAt })
+      }
+      return omit(state, ['pendingKind'], { completedUnseen: false, updatedAt })
+    }
+    default:
+      return { ...state, updatedAt }
   }
-  return { ...state, updatedAt }
 }
 
-export function foldEvents(events: readonly SessionEventView[], createdAt = 0): FoldedSession {
+export function foldEvents(events: readonly SessionEvent[], createdAt = 0): FoldedSession {
   let state = emptyFold(createdAt)
   for (const event of events) state = foldEvent(state, event)
   return state
 }
 
-function firstUserText(data: Record<string, unknown>): string {
-  const content = data.content
-  if (!Array.isArray(content)) {
-    return typeof data.text === 'string' ? clip(data.text) : ''
-  }
-  for (const part of content) {
-    if (!isObject(part)) continue
-    if (part.type === 'text' && typeof part.text === 'string') {
+function firstUserText(message: UserMessage): string {
+  for (const part of message.content) {
+    if (part.type === 'text') {
       const text = clip(part.text)
       if (text !== '') return text
     }
@@ -86,20 +89,25 @@ function firstUserText(data: Record<string, unknown>): string {
   return ''
 }
 
-function errorMessage(reason: Record<string, unknown>): string {
-  const error = isObject(reason.error) ? reason.error : undefined
-  if (typeof error?.message === 'string' && error.message.trim() !== '') return clip(error.message)
-  return '出错'
+function errorMessage(message: string): string {
+  const text = clip(message)
+  return text === '' ? '出错' : text
 }
 
 function clip(text: string): string {
   const cleaned = text.replace(/\s+/g, ' ').trim()
-  if (cleaned.length <= 40) return cleaned
-  return `${cleaned.slice(0, 39)}…`
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  if (Buffer.byteLength(cleaned, 'utf8') <= MAX_TITLE_BYTES) return cleaned
+  const suffix = '…'
+  const budget = MAX_TITLE_BYTES - Buffer.byteLength(suffix, 'utf8')
+  let bytes = 0
+  let clipped = ''
+  for (const character of cleaned) {
+    const characterBytes = Buffer.byteLength(character, 'utf8')
+    if (bytes + characterBytes > budget) break
+    clipped += character
+    bytes += characterBytes
+  }
+  return clipped + suffix
 }
 
 function omit(
