@@ -1,15 +1,27 @@
 import { describe, expect, it } from 'vitest'
+import type { SessionEvent, SessionEventType } from '@deepseek-ai/dsh-session'
 import { foldEvents } from './fold.ts'
 
+function evt<T extends SessionEventType>(type: T, time: number, data: SessionEvent<T>['data']): SessionEvent<T> {
+  return { type, seq: 0, time, data } as SessionEvent<T>
+}
+
+function userData(text: string): SessionEvent<'user/message'>['data'] {
+  return {
+    id: 'message-1' as SessionEvent<'user/message'>['data']['id'],
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'user' },
+  }
+}
+
 describe('foldEvents', () => {
-  it('tracks title, blank, approval, error, and completedUnseen', () => {
+  it('uses the title event and completed turn state', () => {
     const folded = foldEvents([
-      { type: 'user/message', time: 10, data: { content: [{ type: 'text', text: 'Please ship it' }] } },
-      { type: 'session/title', time: 11, data: { title: 'Ship it' } },
-      { type: 'turn/start', time: 12, data: { turn: 1 } },
-      { type: 'approval/asked', time: 13, data: { id: 'a1', toolName: 'bash' } },
-      { type: 'approval/decided', time: 14, data: { id: 'a1', outcome: 'allowed-once' } },
-      { type: 'turn/end', time: 15, data: { turn: 1, reason: { kind: 'completed' } } },
+      evt('user/message', 10, userData('Please ship it')),
+      evt('session/title', 11, { title: 'Ship it', messageSeqs: [], source: { kind: 'user' } }),
+      evt('turn/start', 12, { turn: 1 }),
+      evt('turn/end', 15, { turn: 1, reason: { kind: 'completed' } }),
     ], 1)
     expect(folded.title).toBe('Ship it')
     expect(folded.blank).toBe(false)
@@ -19,23 +31,35 @@ describe('foldEvents', () => {
     expect(folded.updatedAt).toBe(15)
   })
 
-  it('keeps a pending approval and records turn errors', () => {
+  it('caps folded titles by UTF-8 bytes without splitting characters', () => {
+    const folded = foldEvents([evt('session/title', 1, { title: '界'.repeat(30), messageSeqs: [], source: { kind: 'user' } })])
+    expect(Buffer.byteLength(folded.title, 'utf8')).toBeLessThanOrEqual(40)
+    expect(folded.title.endsWith('…')).toBe(true)
+  })
+
+  it('records structured turn errors from the official reason payload', () => {
     const folded = foldEvents([
-      { type: 'user/message', time: 1, data: { content: [{ type: 'text', text: 'hi' }] } },
-      { type: 'approval/asked', time: 2, data: { id: 'a1', toolName: 'bash' } },
-      { type: 'turn/end', time: 3, data: { turn: 1, reason: { kind: 'error', error: { message: 'rate limited' } } } },
+      evt('user/message', 1, userData('hi')),
+      evt('turn/end', 3, { turn: 1, reason: { kind: 'error', error: { message: 'rate limited', code: 'UNKNOWN' } } }),
     ])
-    expect(folded.pendingKind).toBeUndefined()
     expect(folded.lastError).toBe('rate limited')
     expect(folded.completedUnseen).toBe(false)
   })
 
   it('clears completedUnseen on the next turn start', () => {
     const folded = foldEvents([
-      { type: 'turn/end', time: 1, data: { reason: { kind: 'completed' } } },
-      { type: 'turn/start', time: 2, data: { turn: 2 } },
+      evt('turn/end', 1, { turn: 1, reason: { kind: 'completed' } }),
+      evt('turn/start', 2, { turn: 2 }),
     ])
     expect(folded.completedUnseen).toBe(false)
     expect(folded.lastError).toBeUndefined()
+  })
+
+  it('ignores the official seed boundary while updating recency', () => {
+    const folded = foldEvents([
+      evt('session/end-seed', 5, {}),
+    ], 1)
+    expect(folded.updatedAt).toBe(5)
+    expect(folded.blank).toBe(true)
   })
 })

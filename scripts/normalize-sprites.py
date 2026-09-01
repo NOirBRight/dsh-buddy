@@ -1,25 +1,47 @@
 #!/usr/bin/env python3
-"""Normalize the AI-generated sprite sheet into an exact 8x6 grid of 192x192 cells.
+"""Normalize the sprite sheet into an exact 8x6 grid of 192x192 cells.
 
 Detects the drawn grid separator lines (slightly darker than the background),
 extracts each cell interior, and pastes it centered on a uniform background.
-Writes page/buddy-sprites.png (normalized) and keeps the original as
-page/buddy-sprites.orig.png.
+Writes page/buddy-sprites.png without creating an additional source artifact.
+Set DSH_BUDDY_SPRITES_SOURCE to read a separate source image; the source must not resolve to the destination.
+The destination must be a regular file when it already exists; symlink destinations are rejected.
 """
-import shutil
+import os
+import stat
+import tempfile
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "page" / "buddy-sprites.orig.png"
 DST = ROOT / "page" / "buddy-sprites.png"
+source_value = os.environ.get("DSH_BUDDY_SPRITES_SOURCE", "").strip()
+if not source_value:
+    raise FileNotFoundError("DSH_BUDDY_SPRITES_SOURCE must name the source artwork; refusing to read generated output")
+SRC = Path(source_value)
+if not SRC.is_absolute():
+    SRC = ROOT / SRC
 COLS, ROWS = 8, 6
 CELL = 192
 
-if not SRC.exists():
-    shutil.copy(DST, SRC)
+try:
+    destination_metadata = DST.lstat()
+except FileNotFoundError:
+    destination_metadata = None
+if destination_metadata is not None and stat.S_ISLNK(destination_metadata.st_mode):
+    raise RuntimeError(f"sprite destination must not be a symlink: {DST}")
+if os.path.normcase(os.path.realpath(SRC)) == os.path.normcase(os.path.realpath(DST)):
+    raise ValueError(f"sprite source must not resolve to generated destination: {SRC}")
+if not SRC.is_file():
+    raise FileNotFoundError(f"sprite source does not exist: {SRC}")
+try:
+    if os.path.samefile(SRC, DST):
+        raise ValueError(f"sprite source and destination must not be the same file: {SRC}")
+except FileNotFoundError:
+    # The destination may not exist before the first generated sheet.
+    pass
 
 im = Image.open(SRC).convert("RGB")
 a = np.asarray(im).astype(np.int16)
@@ -60,7 +82,8 @@ col_cells = cells_along(np.median(a, axis=0), w, min_cell=120)
 row_cells = cells_along(np.median(a, axis=1), h, min_cell=100)
 print("cols:", len(col_cells), col_cells)
 print("rows:", len(row_cells), row_cells)
-assert len(col_cells) == COLS and len(row_cells) == ROWS, "grid detection failed"
+if len(col_cells) != COLS or len(row_cells) != ROWS:
+    raise ValueError("grid detection failed")
 
 out = Image.new("RGBA", (COLS * CELL, ROWS * CELL), (0, 0, 0, 0))
 bg_arr = bg.reshape(1, 1, 3)
@@ -149,5 +172,18 @@ rgba[..., 1] = g2 * 255
 rgba[..., 2] = b2 * 255
 out = Image.fromarray(rgba.astype(np.uint8))
 
-out.save(DST)
+temporary_path = None
+try:
+    with tempfile.NamedTemporaryFile(dir=DST.parent, prefix=DST.name + ".", suffix=".tmp", delete=False) as temporary:
+        temporary_path = temporary.name
+    out.save(temporary_path, format="PNG")
+    os.replace(temporary_path, DST)
+    temporary_path = None
+finally:
+    if temporary_path is not None:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            # A failed atomic write may already have removed the temporary file.
+            pass
 print("wrote", DST, out.size)

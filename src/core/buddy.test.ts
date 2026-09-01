@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import {
   aggregateMood,
   buildSnapshot,
@@ -9,14 +10,19 @@ import {
   type BuddySession,
 } from './buddy.ts'
 
-const session = (partial: Partial<BuddySession> & Pick<BuddySession, 'id'>): BuddySession => ({
-  title: partial.title ?? partial.id,
-  blank: false,
-  running: false,
-  completedUnseen: false,
-  updatedAt: 1,
-  ...partial,
-})
+type TestSessionFields = Omit<BuddySession, 'id'>
+const session = (partial: Partial<TestSessionFields> & { id: string }): BuddySession => {
+  const { id, ...fields } = partial
+  return {
+    title: id,
+    blank: false,
+    running: false,
+    completedUnseen: false,
+    updatedAt: 1,
+    ...fields,
+    id: id as SessionId,
+  }
+}
 
 describe('classifyStatus', () => {
   it('hides idle blank sessions but still surfaces running blanks', () => {

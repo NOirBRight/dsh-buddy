@@ -2,6 +2,17 @@ import type { UserConfig } from 'tsdown'
 
 const PACKAGE_ID = 'dsh-buddy'
 
+const HOST_EXTERNAL = [
+  '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-host-webserver',
+  '@deepseek-ai/dsh-client-connection',
+  '@deepseek-ai/dsh-session',
+  '@deepseek-ai/dsh-agent',
+  '@deepseek-ai/dsh-workspace',
+  '@deepseek-ai/dsh-brand',
+  '@deepseek-ai/schemastery',
+]
+
 const host: UserConfig = {
   name: PACKAGE_ID,
   entry: ['lib/types/index.js'],
@@ -13,7 +24,7 @@ const host: UserConfig = {
   dts: false,
   clean: false,
   deps: {
-    neverBundle: ['@deepseek-ai/cordis'],
+    neverBundle: HOST_EXTERNAL,
   },
 }
 
@@ -31,6 +42,7 @@ const client: UserConfig = {
       '@deepseek-ai/cordis',
       '@deepseek-ai/dsh-client-connection/client',
       '@deepseek-ai/dsh-client-ui-session/client',
+      '@deepseek-ai/dsh-session',
     ],
   },
   outputOptions: {
