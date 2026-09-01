@@ -10,6 +10,7 @@
   },
   "homepage": "https://github.com/NOirBRight/dsh-buddy#readme",
   "description": "Pixel whale mascot on the 960×400 USB sub-screen: DSH mood dashboard and touch remote",
+  "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -32,6 +33,7 @@
     "lib/types/**/*.d.ts",
     "page/**",
     "cordis.patch.yml",
+    "LICENSE",
     "README.md"
   ],
   "scripts": {
